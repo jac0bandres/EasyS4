@@ -1,8 +1,9 @@
 import numpy as np
+from numpy.typing import ArrayLike
 from typing import Optional
 
 # Coordinate transforms
-def to_polar(xyz: np.ArrayLike, prev_xyz: Optional[np.array], resolution: Optional[int]) -> np.array:
+def to_polar(xyz: ArrayLike, prev_xyz: Optional[np.array], resolution: Optional[int]) -> ArrayLike:
     """
     xyz: [x, y, z],
     Assumes no B, so B may be set to zero by default and allow planar
@@ -13,7 +14,7 @@ def to_polar(xyz: np.ArrayLike, prev_xyz: Optional[np.array], resolution: Option
 
     return np.array([r, theta, z])
 
-def segment(a: np.ArrayLike, b: np.ArrayLike, resolution: int=10):
+def segment(a: ArrayLike, b: ArrayLike, resolution: int=10):
     """
     Arc length segmentation to account for rotating bed
     """
@@ -34,9 +35,9 @@ def segment(a: np.ArrayLike, b: np.ArrayLike, resolution: int=10):
     return np.array(coords)
 
 
-def to_xyz(crt: np.ArrayLike, b_len: int) -> np.array:
+def to_xyz(crt: ArrayLike, b_len: int):
     """
-    ctzb = [x, z, c, b]
+    crt = [x, z, c, b]
     """
     c = np.deg2rad(crt[2])
     b = np.deg2rad(crt[3])
@@ -44,11 +45,11 @@ def to_xyz(crt: np.ArrayLike, b_len: int) -> np.array:
     z = crt[1]
     return np.array[
         (x-(b_len*np.cos(b)))*np.cos(c), 
-        (x-b_len*np.cos(b))*np.sin(c), 
+        (x-(b_len*np.cos(b)))*np.sin(c), 
         z+np.sin(b)
     ]
 
-def get_dist(a: np.ArrayLike, b: np.ArrayLike) -> int:
+def get_dist(a: ArrayLike, b: ArrayLike) -> int:
     return np.sqrt(
         (b[0]- a[0])**2,
         (b[1]- a[1])**2,

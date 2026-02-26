@@ -5,6 +5,7 @@ from pygcode import Line
 def read_file(file_path: str, coordinate: str):
     with open(file_path, 'r') as fh:
         coords = []
+        prev_gcode = {'X': 0, 'Y': 0, 'Z': 0, 'C': 0, 'B': 0} # i hate to use a dict here but oh well
         for line_text in fh:
             line_text = line_text.strip()
             if not line_text or line_text.startswith(';'):
@@ -19,14 +20,18 @@ def read_file(file_path: str, coordinate: str):
                 if gcode.word not in ('G01', 'G00'):
                     continue 
                 if coordinate == "xyz":
-                    x = gcode.X
+                    x = gcode.X if gcode.X is not None else prev_gcode['X']
 
                     if coordinate == "xyz":
-                        y = gcode.Y
-                        z = gcode.Z
+                        y = gcode.Y if gcode.Y is not None else prev_gcode['Y']
+                        z = gcode.Z if gcode.Z is not None else prev_gcode['Z']
+                        prev_gcode['Y'] = y
+                        prev_gcode['Z'] = z
                     elif coordinate == "crt":
-                        c = gcode.C
-                        b = gcode.B
+                        c = gcode.C if gcode.C is not None else prev_gcode['C']
+                        b = gcode.B if gcode.B is not None else prev_gcode['B']
+                        prev_gcode['C'] = c
+                        prev_gcode['B'] = b
 
                     f = None
                     e = None
