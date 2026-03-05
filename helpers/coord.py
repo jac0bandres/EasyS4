@@ -3,16 +3,10 @@ from numpy.typing import ArrayLike
 from typing import Optional
 
 # Coordinate transforms
-def to_polar(xyz: ArrayLike, prev_xyz: Optional[np.array], resolution: Optional[int]) -> ArrayLike:
-    """
-    xyz: [x, y, z],
-    Assumes no B, so B may be set to zero by default and allow planar
-    """
-    r = np.sqrt(xyz[0]**2, xyz[1]**2)
-    theta = np.atan2(xyz[1], xyz[0])
-    z = xyz[3]
-
-    return np.array([r, theta, z])
+def to_polar_xyplane(x, y) -> ArrayLike:
+    r = np.sqrt(x**2, x[1]**2)
+    theta = np.atan2(y, x)
+    return r, theta
 
 def segment(a: ArrayLike, b: ArrayLike, resolution: int=10):
     """
@@ -34,15 +28,12 @@ def segment(a: ArrayLike, b: ArrayLike, resolution: int=10):
 
     return np.array(coords)
 
+def to_xyz(x, z, b, c, b_len: int):
+    if c is None or b is None:
+        raise TypeError('np.deg2rad will fail on NoneType, DF may not be processed')
 
-def to_xyz(crt: ArrayLike, b_len: int):
-    """
-    crt = [x, z, c, b]
-    """
-    c = np.deg2rad(crt[2])
-    b = np.deg2rad(crt[3])
-    x = crt[0]
-    z = crt[1]
+    c = np.deg2rad(c)
+    b = np.deg2rad(b)
     return np.array[
         (x-(b_len*np.cos(b)))*np.cos(c), 
         (x-(b_len*np.cos(b)))*np.sin(c), 

@@ -1,9 +1,11 @@
 import argparse
 import sys
 import numpy as np
+from helpers.gcode import S4_DF
 
-from helpers.gcode import read_file
+from helpers.gcode import read_gcode_file
 from helpers.coord import to_xyz
+from slicer.cura_config import update_cura_config, update_layer_height
 from post.vis import vis_toolpaths
 
 def test_gcode(file_name):
@@ -25,15 +27,14 @@ def handle_scale(args):
 
 def handle_vis(args):
     print(f"Visualizing: {args.file_path}")
-    coords = read_file(args.file_path, args.coordinate_type)
-    if args.coordinate_type == 'crt':
-        tmp = []
-        for coord in coords:
-            tmp.append(to_xyz(coord))
-        coords = np.array(tmp)
-    print(tmp)
-    vis_toolpaths(coords)
+    s4_df = S4_DF(args.file_path, args.b_len)
+    vis_toolpaths(s4_df.df)
 
+def handle_config(args):
+    if args.update:
+        update_cura_config(src=args.update)
+    if args.layer_height:
+        update_layer_height(args.layer_height)
 
 def main():
     parser = argparse.ArgumentParser(description="EasyS4, S4_Slicer utility")
@@ -45,6 +46,11 @@ def main():
     parser_s4.add_argument("file_path", help="Path to input file")
     parser_s4.add_argument("layer_height", type=float, help="Layer height in mm")
     parser_s4.set_defaults(func=handle_xyz)
+
+    parser_config= subparsers.add_parser("config", help="Config utility")
+    parser_config.add_argument("-u", "--update", type=str, help="Settings json")
+    parser_config.add_argument("-l", "--layer_height", type=str, help="Layer height")
+    parser_config.set_defaults(func=handle_config)
 
     parser_xyz = subparsers.add_parser("xyz", help="Slice from polar to xyz")
     parser_xyz.add_argument("file_path", help="Path to input file")
@@ -67,15 +73,11 @@ def main():
     # --- 4. VIS Sub-command ---
     parser_vis = subparsers.add_parser("vis", help="Visualize toolpaths")
     parser_vis.add_argument("file_path", help="Path to input file")
-    parser_vis.add_argument("coordinate_type", help="xyz: Cartesian, crt: Core-R-Theta")
+    parser_vis.add_argument("b_len", help="b_len: length of B nozzle fron hinge to tip (mm)")
     parser_vis.set_defaults(func=handle_vis)
 
     # Parse arguments
     args = parser.parse_args()
-
-    # Run the test function you provided
-    print(test_gcode(args.file_path))
-
     # Execute the function associated with the sub-command
     args.func(args)
 
