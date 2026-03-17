@@ -1,20 +1,22 @@
 # General gcode reader
 import numpy as np
 from pygcode import Line
+from typing import Optional
 import pandas as pd
 import time
 
 class S4_DF:
-    def __init__(self, gcode_filepath: str, b_len: float):
+    def __init__(self, gcode_filepath: str, b_len: Optional[float]):
         self.df = read_gcode_file(gcode_filepath) 
         self.df = fill_forward(self.df)
         coord_type = check_coord(self.df)
-        self.b_len = float(b_len)
+        self.b_len = float(b_len) if b_len else 5.0
         
         if coord_type == 'xyz':
            self.df = to_polar(self.df) 
         elif coord_type == 'core':
             self.df = to_xyz(self.df, self.b_len)
+        
 
         self.df = fill_forward(self.df)
 
@@ -27,6 +29,8 @@ def read_gcode_file(file_path: str):
         Z = []
         C = []
         B = []
+        E = []
+        F = []
         file_len = len(fh.readlines())
         fh.seek(0)
         print(f'{file_len} lines')
@@ -68,15 +72,17 @@ def read_gcode_file(file_path: str):
                 Z.append(z)
                 C.append(c)
                 B.append(b)
+                E.append(e)
+                F.append(f)
 
             if i % 5000 == 0:
                 print(f'Reading line {i}/{file_len}', end='\r', flush=True)
         print(f'Done: {round(time.time()-t, 2)}s', end='\r', flush=True)
 
-        return pd.DataFrame({'X': X, 'Y': Y, 'Z': Z, 'C': C, 'B': B})
+        return pd.DataFrame({'X': X, 'Y': Y, 'Z': Z, 'C': C, 'B': B, 'E': E, 'F': F})
 
 def fill_forward(df: pd.DataFrame):
-    return df.fillna(value={'X': 0, 'Y': 0, 'Z': 0, 'C': 0, 'B': 0}, limit=1).ffill()
+    return df.fillna(value={'X': 0, 'Y': 0, 'Z': 0}, limit=1).ffill()
 
 def to_polar(df):
     df['X_Polar'] = np.sqrt(df['X']**2 + df['Y']**2)
