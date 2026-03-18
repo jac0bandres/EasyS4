@@ -66,10 +66,12 @@ def s4_slice(model_path):
 
 
     # find neighbours
+    print("Finding cell neighbors")
     cell_neighbour_dict = {neighbour_type: {face: [] for face in range(input_tet.number_of_cells)} for neighbour_type in ["point", "edge", "face"]}
     for neighbour_type in ["point", "edge", "face"]:
         cell_neighbours = []
         for cell_index in range(input_tet.number_of_cells):
+            print(f'{cell_index}/{input_tet.number_of_cells} cells', end='\r', flush=True)
             neighbours = input_tet.cell_neighbors(cell_index, f"{neighbour_type}s")
             for neighbour in neighbours:
                 if neighbour > cell_index:
@@ -90,7 +92,7 @@ def s4_slice(model_path):
         '''
         Calculate face normals, face centers, cell centers, and overhang angles for each cell in the tetrahedral mesh.
         '''
-
+        print("Calculating face normals, face centers, cell centers, and overhand angles for each cell.")
         surface_mesh = tet.extract_surface()
         cell_to_face = decode_object(tet.field_data["cell_to_face"])
 
@@ -612,6 +614,7 @@ def s4_slice(model_path):
         Our parameters are the vertices of the deformed mesh.
         '''
 
+        print("Deforming...")
         new_vertices = tet.points.copy()
 
         params = new_vertices.flatten()
@@ -716,6 +719,7 @@ def s4_slice(model_path):
     with open(f'pickle_files/deformed_{model_name}.pkl', 'wb') as f:
         pickle.dump(deformed_tet, f)
 
+    print("Slicing with Cura...")
     # cura slice
     abs_custom= os.path.abspath('config/core.def.json')
     abs_extruder = os.path.abspath('config/fdmextruder.def.json')
@@ -971,6 +975,7 @@ def s4_slice(model_path):
     # gcode_points_containing_cells[gcode_points_containing_cells == -1] = gcode_points_closest_cells[gcode_points_containing_cells == -1]
 
     # transform gcode points to original mesh's shape
+    print("Reforming...")
     new_gcode_points = []
     prev_new_position = None
     travelling_over_air = False
@@ -1103,6 +1108,7 @@ def s4_slice(model_path):
 
     # save transformed gcode
     with open(f'output_gcode/{model_name}.gcode', 'w') as fh:
+        print(f"Saving to output_gcode/{model_name}.gcode")
         # write header
         fh.write("G94 ; mm/min feed  \n")
         fh.write("G28 ; home \n")
