@@ -1,5 +1,7 @@
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
+import numpy as np
+from scipy.spatial.distance import cdist
 
 def vis_extrusion(df):
     e_col = 'E'
@@ -12,6 +14,17 @@ def vis_extrusion(df):
     ax.set_xlabel('t')
     ax.set_ylabel('Extrusion change (mm)')
     plt.title('Extrusion')
+    plt.show()
+
+def vis_deltas(df):    
+    x_col = 'X_Cart' if 'X_Cart' in df.columns else 'X'
+    y_col = 'Y_Cart' if 'Y_Cart' in df.columns else 'Y'
+    z_col = 'Z_Polar' if 'Z_Polar' in df.columns else 'Z'
+
+    dist = cdist([df[x_col], df[y_col], df[z_col]], [df[x_col], df[y_col], df[z_col]], metric='euclidean')
+    plt.plot(dist)
+
+    plt.title('Deltas')
     plt.show()
 
 def vis_toolpaths(df):

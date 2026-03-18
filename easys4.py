@@ -7,7 +7,7 @@ from helpers.gcode import read_gcode_file
 from helpers.coord import to_xyz
 from slicer.cura_config import update_cura_config, update_layer_height
 from slicer.S4 import s4_slice
-from post.vis import vis_toolpaths, vis_extrusion
+from post.vis import vis_toolpaths, vis_extrusion, vis_deltas
 from post.extrusion_scale import scale_e
 
 def test_gcode(file_name):
@@ -36,6 +36,8 @@ def handle_vis(args):
         vis_toolpaths(s4_df.df)
     if args.type == 'extrusion':
         vis_extrusion(s4_df.df)
+    if args.type == 'delta':
+        vis_deltas(s4_df.df) 
 
 def handle_config(args):
     if args.update:
