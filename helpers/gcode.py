@@ -13,9 +13,11 @@ class S4_DF:
         self.b_len = float(b_len) if b_len else 5.0
         
         if coord_type == 'xyz':
-           self.df = to_polar(self.df) 
+           self.df.xyz = self.df
+           self.df.polar = to_polar(self.df) 
         elif coord_type == 'core':
-            self.df = to_xyz(self.df, self.b_len)
+            self.df.polar = self.df
+            self.df.xyz = to_xyz(self.df, self.b_len)
         
 
         self.df = fill_forward(self.df)

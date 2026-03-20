@@ -33,11 +33,11 @@ def handle_vis(args):
     print(f"Visualizing: {args.file_path}")
     s4_df = S4_DF(args.file_path, args.b_len)
     if args.type == 'toolpaths':
-        vis_toolpaths(s4_df.df)
+        vis_toolpaths(s4_df.df.xyz)
     if args.type == 'extrusion':
-        vis_extrusion(s4_df.df)
+        vis_extrusion(s4_df.df.xyz)
     if args.type == 'delta':
-        vis_deltas(s4_df.df) 
+        vis_deltas(s4_df.df.xyz) 
 
 def handle_config(args):
     if args.update:

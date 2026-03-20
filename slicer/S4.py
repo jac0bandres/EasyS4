@@ -569,8 +569,8 @@ def s4_slice(model_path):
     ROTATION_MULTIPLIER = 2   # the larger the multiplier, the more the rotation field will be rotated
     SET_INITIAL_ROTATION_TO_ZERO = False # reduces influence of initial rotation field on non-overhanging tetrahedrons. good when initial rotation field is noisy
     INITIAL_ROTATION_FIELD_SMOOTHING = 30
-    MAX_POS_ROTATION = np.deg2rad(3600) # normally set to 360 unless you get collisions
-    MAX_NEG_ROTATION = np.deg2rad(-3600) # normally set to 360 unless you get collisions
+    MAX_POS_ROTATION = np.deg2rad(360) # normally set to 360 unless you get collisions
+    MAX_NEG_ROTATION = np.deg2rad(-360) # normally set to 360 unless you get collisions
     ITERATIONS = 100
     SAVE_GIF = True
     STEEP_OVERHANG_COMPENSATION = True
@@ -806,7 +806,7 @@ def s4_slice(model_path):
     SEG_SIZE = 0.6 # mm
     MAX_ROTATION = 30 # degrees
     MIN_ROTATION = -130 # degrees
-    NOZZLE_OFFSET = 42 # mm actuallt 41.5
+    NOZZLE_OFFSET = 45 # mm actuallt 41.5
 
     # find how each vertex in tet has been transformed
     vertex_transformations = deformed_tet.points - input_tet.points

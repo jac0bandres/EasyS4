@@ -257,7 +257,7 @@
             {
                 "material_diameter":
                 {
-                    "default_value": 2.85,
+                    "default_value": 1.75,
                     "description": "Adjusts the diameter of the filament used. Match this value with the diameter of the used filament.",
                     "enabled": "machine_gcode_flavor != \"UltiGCode\"",
                     "label": "Diameter",
