@@ -50,7 +50,7 @@ def s4_slice(model_path):
     # input_tet = input_tet.rotate_x(-90) # b axis mount
 
     # scale
-    #input_tet = input_tet.scale(1.5)
+    input_tet = input_tet.scale(1)
 
     # make origin center bottom of bounding box
     # PART_OFFSET = np.array([0., 10., 0.]) # z mount
@@ -108,13 +108,21 @@ def s4_slice(model_path):
 
         tet.cell_data['face_normal'] = np.full((tet.number_of_cells, 3), np.nan)
         surface_mesh_face_normals = surface_mesh.face_normals
-        for cell_index, face_indices in cell_to_face.items():
-            face_normals = surface_mesh_face_normals[face_indices]
-            # get the normal facing the most down
-            most_down_normal_index = np.argmin(face_normals[:, 2])
-            tet.cell_data['face_normal'][cell_index] = face_normals[most_down_normal_index]
-        tet.cell_data['face_normal'] =  tet.cell_data['face_normal'] / np.linalg.norm(tet.cell_data['face_normal'], axis=1)[:, None]
+        keys = list(cell_to_face.keys())
+        values = list(cell_to_face.values())
+        all_face_indices = np.concatenate(values)
+        cell_counts = [len(f) for f in values]
+        all_cell_ids = np.repeat(keys, cell_counts)
+        all_normals = surface_mesh.face_normals[all_face_indices]
+        sort_idx = np.lexsort((all_normals[:, 2], all_cell_ids))
+        sorted_ids = all_cell_ids[sort_idx]
+        sorted_normals = all_normals[sort_idx]
+        unique_ids, first_indices = np.unique(sorted_ids, return_index=True)
+        tet.cell_data['face_normal'][unique_ids] = sorted_normals[first_indices]
+        final_normals = tet.cell_data['face_normal']
+        tet.cell_data['face_normal'] = final_normals / np.clip(np.linalg.norm(final_normals, axis=1)[:, None], 1e-15, None)
 
+        
         tet.cell_data['face_center'] = np.empty((tet.number_of_cells, 3))
         tet.cell_data['face_center'][:,:] = np.nan
         surface_mesh_cell_centers = surface_mesh.cell_centers().points
@@ -768,6 +776,23 @@ def s4_slice(model_path):
 
         return bary
 
+    def vectorized_barycentric_interpolate(points, 
+                                           cell_indices, 
+                                           deformed_tet, 
+                                           vertex_transformations, 
+                                           vertex_rotations):
+        v_idx = deformed_tet.field_data['cells'][cell_indices]
+        cell_verts = deformed_tet.field_data['cell_vertices'][v_idx]
+        bary = vectorized_barycentric_coordinates(cell_verts, points)
+        trans_at_points = np.sum(vertex_transformations[v_idx] * bary[..., np.newaxis], axis=0)
+        rot_at_points = np.sum(vertex_rotations[v_idx] * bary, axis=0)
+        return points - trans_at_points, rot_at_points
+    
+    def project_vec(pts, x_axis, y_axis):
+        px = np.einsum('nij,nj->ni', pts, x_axis)
+        py = pts[:, :, 2]
+        return np.stack([px, py], axis=-1)
+
     def calc_barycentric_coordinates(tet_a, tet_b, tet_c, tet_d, point):
         '''
         Calculate the barycentric coordinates of a point in a tetrahedron. This is used to interpolate
@@ -806,7 +831,7 @@ def s4_slice(model_path):
     SEG_SIZE = 0.6 # mm
     MAX_ROTATION = 30 # degrees
     MIN_ROTATION = -130 # degrees
-    NOZZLE_OFFSET = 45 # mm actuallt 41.5
+    NOZZLE_OFFSET = 41.5 # mm actuallt 41.5
 
     # find how each vertex in tet has been transformed
     vertex_transformations = deformed_tet.points - input_tet.points
@@ -873,7 +898,6 @@ def s4_slice(model_path):
         # z_squish_scales[cell_index] = (unwarped_vertices_rotated[:, 2].max() - unwarped_vertices_rotated[:, 2].min()) / (warped_vertices[:, 2].max() - warped_vertices[:, 2].min())
         z_squish_scales[cell_index] = tetrahedron_volume(*unwarped_vertices) / tetrahedron_volume(*warped_vertices)
         # z_squish_scales[cell_index] = min(z_squish_scales[cell_index], 5) # cap z squish scale
-
 
     # read gcode
     pos = np.array([0., 0., 20.])

@@ -3,18 +3,48 @@ from matplotlib.widgets import Slider
 import numpy as np
 from scipy.spatial.distance import cdist
 
+def vis_extrusion_density_slice(df):
+    pass
+
+
 def vis_extrusion(df):
-    e_col = 'E'
+    x = df.xyz['X']
+    y = df.xyz['Y'] 
+    extrusion = df.xyz['E']
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # 2. Create the Hexbin Heatmap
+    # gridsize: controls the resolution of the "cells"
+    # C: the value to aggregate (Extrusion)
+    # reduce_C_function: how to aggregate (np.sum shows total plastic, np.mean shows flow rate)
+    # hb = ax.hexbin(x, y, C=extrusion, gridsize=100, cmap='inferno', reduce_C_function=np.sum)
+    hb = ax.hexbin(x, y, gridsize=100)
+
+    # 3. Formatting
+    cb = fig.colorbar(hb, ax=ax)
+    cb.set_label('Accumulated Extrusion (mm)')
     
-    plot_df = df[[e_col]].dropna().reset_index(drop=True)
-    fig = plt.figure(figsize=(10,9))
-    ax = fig.add_subplot(111)
+    ax.set_aspect('equal') # Keep the circular bed shape circular
+    ax.set_xlabel('X (mm)')
+    ax.set_ylabel('Y (mm)')
+    ax.set_title('Extrusion Concentration Map')
     
-    ax.plot(plot_df[e_col], color='blue')
-    ax.set_xlabel('t')
-    ax.set_ylabel('Extrusion change (mm)')
-    plt.title('Extrusion')
     plt.show()
+
+#def vis_extrusion(df):
+#    euclidean = np.linalg.norm(xyz, axis=1)
+#    print(f"\nsize: {len(euclidean)} + {len(df.xyz['E'])}")
+#
+#    
+#    fig = plt.figure(figsize=(10,9))
+#    ax = fig.add_subplot(111)
+#    
+#    ax.scatter(euclidean, df['E'], color='blue')
+#    ax.set_xlabel('Distance')
+#    ax.set_ylabel('Extrusion')
+#    plt.title('Extrusion')
+#    plt.show()
 
 def vis_deltas(df):    
     x_col = 'X_Cart' if 'X_Cart' in df.columns else 'X'

@@ -8,7 +8,7 @@ from helpers.coord import to_xyz
 from slicer.cura_config import update_cura_config, update_layer_height
 from slicer.S4 import s4_slice
 from post.vis import vis_toolpaths, vis_extrusion, vis_deltas
-from post.extrusion_scale import scale_e
+from post.extrusion_scale import scale_e, dampen_e
 
 def test_gcode(file_name):
     print(f"--- Testing G-Code for: {file_name} ---")
@@ -25,9 +25,12 @@ def handle_xyz(args):
 def handle_crt(args):
     print(f"Slicing Custom: {args.file_path} @ {args.layer_height}mm")
 
-def handle_scale(args):
-    print(f"Scaling Extrusion: {args.file_path} by factor {args.extrusion_scale}")
-    scale_e(args.file_path, args.extrusion_scale)
+def handle_extrusion(args):
+    if (args.scale):
+        scale_e(args.file_path, args.scale)
+    if (args.dampen and args.b_len and args.e_max and args.threshold):
+        dampen_e(args.file_path, args.threshold, args.b_len, args.e_max, args.dampen)
+    
 
 def handle_vis(args):
     print(f"Visualizing: {args.file_path}")
@@ -69,10 +72,15 @@ def main():
     parser_crt.add_argument("layer_height", type=float, help="Layer height in mm")
     parser_crt.set_defaults(func=handle_crt)
 
-    parser_scale = subparsers.add_parser("scale_e", help="Scale extrusions only")
-    parser_scale.add_argument("file_path", help="Path to input file")
-    parser_scale.add_argument("-e", "--extrusion", type=float, required=True, dest="extrusion_scale", help="Scaling factor")
-    parser_scale.set_defaults(func=handle_scale)
+    parser_extrusion = subparsers.add_parser("extrusion", help="Extrusion util")
+    parser_extrusion.add_argument("file_path", help="Path to input file")
+    parser_extrusion.add_argument("-s", "--scale", type=float, dest="scale", help="Scaling factor")
+    parser_extrusion.add_argument("-b", "--b_length", type=float, dest="b_len")
+    parser_extrusion.add_argument("-d", "--dampen", type=float, dest="dampen", help="Dampening strength")
+    parser_extrusion.add_argument("-t", "--threshold", type=float, dest="threshold", help="Dampening threshold distance")
+    parser_extrusion.add_argument("-m", "--e_max", type=float, dest="e_max", help="Max extrusion")
+
+    parser_extrusion.set_defaults(func=handle_extrusion)
 
     parser_vis = subparsers.add_parser("vis", help="Visualize toolpaths")
     parser_vis.add_argument("-t", "--type", type=str, help="Type of visualization you'd like to perform. 'extrusion', 'toolpath'")

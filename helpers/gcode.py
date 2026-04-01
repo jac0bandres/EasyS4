@@ -8,9 +8,8 @@ import time
 class S4_DF:
     def __init__(self, gcode_filepath: str, b_len: Optional[float]):
         self.df = read_gcode_file(gcode_filepath) 
-        self.df = fill_forward(self.df)
         coord_type = check_coord(self.df)
-        self.b_len = float(b_len) if b_len else 5.0
+        self.b_len = float(b_len) if b_len else 41.5
         
         if coord_type == 'xyz':
            self.df.xyz = self.df
@@ -19,9 +18,6 @@ class S4_DF:
             self.df.polar = self.df
             self.df.xyz = to_xyz(self.df, self.b_len)
         
-
-        self.df = fill_forward(self.df)
-
 def read_gcode_file(file_path: str):
     with open(file_path, 'r') as fh:
         print(f'Opening {file_path}')
@@ -33,6 +29,8 @@ def read_gcode_file(file_path: str):
         B = []
         E = []
         F = []
+        L = []
+        G = []
         file_len = len(fh.readlines())
         fh.seek(0)
         print(f'{file_len} lines')
@@ -76,12 +74,14 @@ def read_gcode_file(file_path: str):
                 B.append(b)
                 E.append(e)
                 F.append(f)
+                L.append(i)
+                G.append(gcode.word)
 
             if i % 5000 == 0:
                 print(f'Reading line {i}/{file_len}', end='\r', flush=True)
         print(f'Done: {round(time.time()-t, 2)}s', end='\r', flush=True)
 
-        return pd.DataFrame({'X': X, 'Y': Y, 'Z': Z, 'C': C, 'B': B, 'E': E, 'F': F})
+        return pd.DataFrame({'X': X, 'Y': Y, 'Z': Z, 'C': C, 'B': B, 'E': E, 'F': F, 'L': L, 'G': G})
 
 def fill_forward(df: pd.DataFrame):
     return df.fillna(value={'X': 0, 'Y': 0, 'Z': 0}, limit=1).ffill()
@@ -94,12 +94,27 @@ def to_polar(df):
     return df
 
 def to_xyz(df, b_len):
-    radius = df['X'] - (b_len*np.cos(np.radians(df['B'])))
-
-    df['X_Cart'] = radius*np.cos(np.radians(df['C']))
-    df['Y_Cart'] = radius*np.sin(np.radians(df['C']))
-    df['Z_Polar'] = df['Z']+np.sin(np.radians(df['B']))
-
+    # Determine if it's a travel move to handle the z_hop logic
+    # (Assuming you have a 'command' or 'travelling' column)
+    z_hop = np.where(df['G'] == 'G00', 1, 0)
+    
+    # Total effective linkage length
+    L = b_len + z_hop
+    
+    # Convert B (rotation) and C (theta) to radians
+    rad_b = np.radians(df['B']) # This is your 'rotation'
+    rad_c = np.radians(df['C']) # This is your 'theta' or 'theta_accum'
+    
+    # 1. Reverse the offset compensation to find the original Polar R and Z
+    # We add back the sin component and subtract the cos component
+    r_orig = df['X'] + (np.sin(rad_b) * L)
+    z_orig = df['Z'] - ((np.cos(rad_b) - 1) * L) - z_hop
+    
+    # 2. Convert Polar (r, theta) back to Cartesian (X, Y)
+    df['X'] = r_orig * np.cos(rad_c)
+    df['Y'] = r_orig * np.sin(rad_c)
+    df['Z'] = z_orig
+    
     return df
 
 def check_coord(df):
