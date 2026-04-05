@@ -93,32 +93,99 @@ def to_polar(df):
 
     return df
 
-def to_xyz(df, b_len):
-    # Determine if it's a travel move to handle the z_hop logic
-    # (Assuming you have a 'command' or 'travelling' column)
-    z_hop = np.where(df['G'] == 'G00', 1, 0)
+def to_xyz(df, b_len, angle_step=1.0):
+    """
+    Interpolates B and C angles between rows and transforms to Cartesian.
+    Assumes X and Z remain constant between angular changes.
+    """
     
-    # Total effective linkage length
+    # 1. Identify where interpolation is needed
+    # We calculate the max angular delta between rows to determine step count
+    diff_b = np.abs(df['B'].diff().shift(-1).fillna(0))
+    diff_c = np.abs(df['C'].diff().shift(-1).fillna(0)) 
+    df['E'].fillna(0)
+    max_diff = np.maximum(diff_b, diff_c)
+    
+    interpolated_rows = []
+
+    for i in range(len(df) - 1):
+        start_row = df.iloc[i]
+        end_row = df.iloc[i+1]
+        
+        # Calculate steps for this specific segment
+        steps = int(np.ceil(max_diff.iloc[i] / angle_step))
+        steps = max(steps, 1) # Ensure at least the original point is kept
+
+        # Generate linear ramps for B and C
+        # We use endpoint=False to avoid duplicating the 'end_row' 
+        # which becomes the 'start_row' of the next iteration
+        b_interp = np.linspace(start_row['B'], end_row['B'], steps, endpoint=False)
+        c_interp = np.linspace(start_row['C'], end_row['C'], steps, endpoint=False)
+
+        if start_row['E'] == end_row['E'] or start_row['G'] == 'G00':
+            e_interp = np.full(steps, start_row['E'])
+        else:
+            e_interp = np.linspace(start_row['E'], end_row['E'], steps, endpoint=False)
+        np.nan_to_num(e_interp, 0)
+        
+        # Create a temporary block of data
+        # X and Z are assumed constant between these angle changes
+        for b, c, e in zip(b_interp, c_interp, e_interp):
+            interpolated_rows.append({
+                'G': start_row['G'],
+                'X_mach': start_row['X'],
+                'Z_mach': start_row['Z'],
+                'B': b,
+                'C': c,
+                'E': e,
+            })
+
+    # Add the final row of the original dataframe
+    last_row = df.iloc[-1]
+    interpolated_rows.append({
+        'G': last_row['G'],
+        'X_mach': last_row['X'],
+        'Z_mach': last_row['Z'],
+        'B': last_row['B'],
+        'C': last_row['C'],
+        'E': last_row['E']
+    })
+
+    # Convert back to DataFrame for vector math
+    idf = pd.DataFrame(interpolated_rows)
+
+    # 2. Apply the Kinematic Transformation
+    z_hop = np.where(idf['G'] == 'G00', 1, 0)
     L = b_len + z_hop
     
-    # Convert B (rotation) and C (theta) to radians
-    rad_b = np.radians(df['B']) # This is your 'rotation'
-    rad_c = np.radians(df['C']) # This is your 'theta' or 'theta_accum'
+    rad_b = np.radians(idf['B'])
+    rad_c = np.radians(idf['C'])
     
-    # 1. Reverse the offset compensation to find the original Polar R and Z
-    # We add back the sin component and subtract the cos component
-    r_orig = df['X'] + (np.sin(rad_b) * L)
-    z_orig = df['Z'] - ((np.cos(rad_b) - 1) * L) - z_hop
+    # Reverse the machine offset to find Polar R and Z
+    # r_orig is the distance from the rotation center in the X plane
+    r_orig = idf['X_mach'] + (np.sin(rad_b) * L)
+    z_orig = idf['Z_mach'] - ((np.cos(rad_b) - 1) * L) - z_hop
     
-    # 2. Convert Polar (r, theta) back to Cartesian (X, Y)
-    df['X'] = r_orig * np.cos(rad_c)
-    df['Y'] = r_orig * np.sin(rad_c)
-    df['Z'] = z_orig
+    # Final Cartesian Output
+    idf['X'] = r_orig * np.cos(rad_c)
+    idf['Y'] = r_orig * np.sin(rad_c)
+    idf['Z'] = z_orig
+
+    export_cartesian_gcode(idf)
     
-    return df
+    return idf
 
 def check_coord(df):
     if df['C'].isnull().all() or df['B'].isnull().all():
         return 'xyz'
     else:
         return 'core'
+
+def export_cartesian_gcode(idf, filename="cura_preview.gcode"):
+    with open(filename, 'w') as f:
+        f.write("G90 ; Absolute positioning\n")
+        f.write("M82 ; Absolute extrusion\n")
+        
+        for _, row in idf.iterrows():
+            g_cmd = "G0" if row['G'] == 'G00' else "G1"
+            f.write(f"{g_cmd} X{row['X']:.3f} Y{row['Y']:.3f} Z{row['Z']:.3f} E{row['E']:.5f}\n")

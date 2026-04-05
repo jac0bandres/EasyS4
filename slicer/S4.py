@@ -4,6 +4,8 @@ import tetgen
 import open3d as o3d
 from scipy.optimize import minimize, least_squares
 from scipy.spatial.transform import Rotation as R
+from scipy import sparse #, coo_matrix, csr_sparse
+import matplotlib.pyplot as plt
 import pickle
 import time
 import base64
@@ -16,9 +18,13 @@ from slicer.cura_config import get_config, get_slicer_settings
 
 import warnings
 warnings.simplefilter('ignore')
+CURA_LOGS_DIR = os.path.abspath('./cura_logs')
 
+total_time = time.time()
+plotter = pv.Plotter(off_screen=True)
 
 def s4_slice(model_path):
+    prev_time = time.time()
     if model_path:
         model_name = os.path.basename(model_path).split('.')[0]
         print(f'Slicing {model_name}...')
@@ -50,7 +56,7 @@ def s4_slice(model_path):
     # input_tet = input_tet.rotate_x(-90) # b axis mount
 
     # scale
-    input_tet = input_tet.scale(1)
+    input_tet = input_tet.scale(4)
 
     # make origin center bottom of bounding box
     # PART_OFFSET = np.array([0., 10., 0.]) # z mount
@@ -63,36 +69,70 @@ def s4_slice(model_path):
     PART_OFFSET = np.array([0., 0., 0.])
     x_min, x_max, y_min, y_max, z_min, z_max = input_tet.bounds
     input_tet.points -= np.array([(x_min + x_max) / 2, (y_min + y_max) / 2, z_min]) + PART_OFFSET
-
+    plotter.add_mesh(input_tet, show_edges=True)
 
     # find neighbours
-    print("Finding cell neighbors")
-    cell_neighbour_dict = {neighbour_type: {face: [] for face in range(input_tet.number_of_cells)} for neighbour_type in ["point", "edge", "face"]}
-    for neighbour_type in ["point", "edge", "face"]:
-        cell_neighbours = []
-        for cell_index in range(input_tet.number_of_cells):
-            print(f'{cell_index}/{input_tet.number_of_cells} cells', end='\r', flush=True)
-            neighbours = input_tet.cell_neighbors(cell_index, f"{neighbour_type}s")
-            for neighbour in neighbours:
-                if neighbour > cell_index:
-                    cell_neighbours.append((cell_index, neighbour))
-        for face_1, face_2 in np.array(cell_neighbours):
-            cell_neighbour_dict[neighbour_type][face_1].append(face_2)
-            cell_neighbour_dict[neighbour_type][face_2].append(face_1)
+    print("Finding cell neighbors") 
+    cells_only = input_tet.cells.reshape(-1, 5)[:, 1:] # reshape to drop n0 number of points
+    num_cells = input_tet.n_cells
+    num_points = input_tet.n_points
 
-        input_tet.field_data[f"cell_{neighbour_type}_neighbours"] = np.array(cell_neighbours)
+    cell_indices = np.repeat(np.arange(num_cells), 4)
+    point_indices = cells_only.ravel()
+    data = np.ones(len(cell_indices), dtype=int)
+
+    C_P = sparse.csr_matrix((data, (cell_indices, point_indices)), shape=(num_cells, num_points))
+
+    adjacency = (C_P @ C_P.T).tocoo()
+
+    cell_neighbour_dict = {n_type: {i: [] for i in range(num_cells)} for n_type in ["point", "edge", "face"]}
+    cell_neighbours_list = {n_type: [] for n_type in ["point", "edge", "face"]}
+
+    mask = adjacency.row != adjacency.col
+    rows = adjacency.row[mask]
+    cols = adjacency.col[mask]
+    counts = adjacency.data[mask]
+
+    for u, v, count in zip(rows, cols, counts):
+        cell_neighbour_dict["point"][u].append(v)
+        if u < v: cell_neighbours_list["point"].append((u, v))
+        
+        if count >= 2:
+            cell_neighbour_dict["edge"][u].append(v)
+            if u < v: cell_neighbours_list["edge"].append((u, v))
+            
+        if count == 3:
+            cell_neighbour_dict["face"][u].append(v)
+            if u < v: cell_neighbours_list["face"].append((u, v))
+
+    for n_type in ["point", "edge", "face"]:
+        input_tet.field_data[f"cell_{n_type}_neighbours"] = np.array(cell_neighbours_list[n_type])
+
+    print(f"Neighbors done: {round(time.time()- prev_time, 2)}s")
+    prev_time = time.time()
 
     cell_neighbour_graph = nx.Graph()
+
+    # 1. Get all cell centers as a NumPy array
     cell_centers = input_tet.cell_centers().points
-    for edge in input_tet.field_data["cell_point_neighbours"]: # use point neighbours for best accuracy
-        distance = np.linalg.norm(cell_centers[edge[0]] - cell_centers[edge[1]])
-        cell_neighbour_graph.add_weighted_edges_from([(edge[0], edge[1], distance)])
+
+    # 2. Extract the edges from field_data
+    edges = input_tet.field_data["cell_point_neighbours"]
+
+    # 3. Vectorized Distance Calculation
+    # We grab all 'start' centers and 'end' centers for every edge simultaneously
+    starts = cell_centers[edges[:, 0]]
+    ends = cell_centers[edges[:, 1]]
+
+    distances = np.linalg.norm(starts - ends, axis=1)
+
+    weighted_edges = zip(edges[:, 0], edges[:, 1], distances)
+    cell_neighbour_graph.add_weighted_edges_from(weighted_edges)
 
     def update_tet_attributes(tet):
         '''
         Calculate face normals, face centers, cell centers, and overhang angles for each cell in the tetrahedral mesh.
         '''
-        print("Calculating face normals, face centers, cell centers, and overhand angles for each cell.")
         surface_mesh = tet.extract_surface()
         cell_to_face = decode_object(tet.field_data["cell_to_face"])
 
@@ -126,114 +166,117 @@ def s4_slice(model_path):
         tet.cell_data['face_center'] = np.empty((tet.number_of_cells, 3))
         tet.cell_data['face_center'][:,:] = np.nan
         surface_mesh_cell_centers = surface_mesh.cell_centers().points
-        for cell_index, face_indices in cell_to_face.items():
-            face_centers = surface_mesh_cell_centers[face_indices]
-            # get the normal facing the most down
-            most_down_center_index = np.argmin(face_centers[:, 2])
-            tet.cell_data['face_center'][cell_index] = face_centers[most_down_center_index]
 
-        tet.cell_data["cell_center"] = tet.cell_centers().points
+        keys = np.array(list(cell_to_face.keys()))
+        values = list(cell_to_face.values())
+        all_face_indices = np.concatenate(values)
+        cell_counts = [len(f) for f in values]
+        all_cell_ids = np.repeat(keys, cell_counts)
 
-        # calculate bottom cells
-        bottom_cell_threshold = np.nanmin(tet.cell_data['face_center'][:, 2])+0.3
+        all_centers = surface_mesh_cell_centers[all_face_indices]
+        sort_idx_centers = np.lexsort((all_centers[:, 2], all_cell_ids))
+        sorted_ids_centers = all_cell_ids[sort_idx_centers]
+        sorted_centers = all_centers[sort_idx_centers]
+        _, first_indices_centers = np.unique(sorted_ids_centers, return_index=True)
+
+        tet.cell_data['face_center'] = np.full((tet.number_of_cells, 3), np.nan)
+        tet.cell_data['face_center'][keys] = sorted_centers[first_indices_centers]
+
+        tet.cell_data['cell_center'] = tet.cell_centers().points
+        bottom_cell_threshold = np.nanmin(tet.cell_data['face_center'][:, 2]) + 0.3
         bottom_cells_mask = tet.cell_data['face_center'][:, 2] < bottom_cell_threshold
         tet.cell_data['is_bottom'] = bottom_cells_mask
         bottom_cells = np.where(bottom_cells_mask)[0]
-
         face_normals = tet.cell_data['face_normal'].copy()
-        face_normals[bottom_cells_mask] = np.nan # make bottom faces not angled
-        overhang_angle = np.arccos(np.dot(face_normals, up_vector))
-        tet.cell_data['overhang_angle'] = overhang_angle
-
-        overhang_direction = face_normals[:, :2].copy()
-        overhang_direction /= np.linalg.norm(overhang_direction, axis=1)[:, None]
-        tet.cell_data['overhang_direction'] = overhang_direction
-
-        # calculate if cell will print in air by seeing if any cell centers along path to base are higher
-        IN_AIR_THRESHOLD = 1
-        tet.cell_data['in_air'] = np.full(tet.number_of_cells, False)
+        face_normals[bottom_cells_mask] = np.nan
+        dots = np.sum(face_normals * up_vector, axis=1)
+        tet.cell_data['overhang_angle'] = np.arccos(np.clip(dots, -1.0, 1.0))
 
         _, paths_to_bottom = nx.multi_source_dijkstra(cell_neighbour_graph, set(bottom_cells))
 
-        # put it in cell data
-        tet.cell_data['path_to_bottom'] = np.full((tet.number_of_cells, np.max([len(x) for x in paths_to_bottom.values()])), -1)
-        for cell_index, path_to_bottom in paths_to_bottom.items():
-            tet.cell_data['path_to_bottom'][cell_index, :len(path_to_bottom)] = path_to_bottom
+        max_path_len = max(len(p) for p in paths_to_bottom.values())
+        path_matrix = np.full((tet.number_of_cells, max_path_len), -1, dtype=int)
 
-        # calculate if cell is in air
-        for cell_index in range(tet.number_of_cells):
-            path_to_bottom = paths_to_bottom[cell_index]
-            if len(path_to_bottom) > 1:
-                cell_heights = tet.cell_data['cell_center'][path_to_bottom, 2]
-                if np.any(cell_heights > tet.cell_data['cell_center'][cell_index, 2] + IN_AIR_THRESHOLD):
-                    tet.cell_data['in_air'][cell_index] = True
+        for cell_idx, path in paths_to_bottom.items():
+            path_matrix[cell_idx, :len(path)] = path
+        tet.cell_data['path_to_bottom'] = path_matrix
+
+        IN_AIR_THRESHOLD = 1
+        cell_heights = tet.cell_data['cell_center'][:, 2]
+
+        path_heights = cell_heights[path_matrix]
+        path_heights[path_matrix == -1] = -np.inf
+
+        max_path_heights = np.max(path_heights, axis=1)
+        tet.cell_data['in_air'] = max_path_heights > (cell_heights + IN_AIR_THRESHOLD)
 
         return tet
 
     def calculate_tet_attributes(tet):
-        '''
-        Calculate shared vertices between cells, cell to face & face to cell relations, and bottom cells of the tetrahedral mesh.
-        '''
-
+        print("Tet attributes...")
+        prev_time = time.time()
+        
+        # 1. Extract and store basic data
         surface_mesh = tet.extract_surface()
-
-        # put general data in field_data for easy access
-        cells = tet.cells.reshape(-1, 5)[:, 1:] # assume all cells have 4 vertices
+        cells = tet.cells.reshape(-1, 5)[:, 1:]
         tet.add_field_data(cells, "cells")
-        cell_vertices = tet.points
-        tet.add_field_data(cell_vertices, "cell_vertices")
-        faces = surface_mesh.faces.reshape(-1, 4)[:, 1:] # assume all faces have 3 vertices
+        tet.add_field_data(tet.points, "cell_vertices")
+        
+        faces = surface_mesh.faces.reshape(-1, 4)[:, 1:]
         tet.add_field_data(faces, "faces")
-        face_vertices = surface_mesh.points
-        tet.add_field_data(face_vertices, "face_vertices")
+        tet.add_field_data(surface_mesh.points, "face_vertices")
 
-        # calculate shared vertices
-        shared_vertices = []
-        for cell_1, cell_2 in tet.field_data["cell_point_neighbours"]:
-            shared_vertices_these_faces = np.intersect1d(cells[cell_1], cells[cell_2])
-            for vertex in shared_vertices_these_faces:
-                shared_vertices.append({
-                        "cell_1_index": cell_1,
-                        "cell_2_index": cell_2,
-                        "cell_1_vertex_index": np.where(cells[cell_1] == vertex)[0][0],
-                        "cell_2_vertex_index": np.where(cells[cell_2] == vertex)[0][0],
-                    })
+        neighbors = np.array(tet.field_data["cell_point_neighbours"])
+        c1_indices = neighbors[:, 0]
+        c2_indices = neighbors[:, 1]
+        
+        # This identifies vertices shared between neighbor pairs without intersect1d
+        # We broadcast comparison: (Pairs, 4, 1) == (Pairs, 1, 4) -> (Pairs, 4, 4)
+        c1_nodes = cells[c1_indices]
+        c2_nodes = cells[c2_indices]
+        matches = c1_nodes[:, :, None] == c2_nodes[:, None, :]
+        
+        # Get indices where matches are true
+        pair_idx, v1_idx, v2_idx = np.where(matches)
+        shared_vertices = [
+            {
+                "cell_1_index": c1_indices[p],
+                "cell_2_index": c2_indices[p],
+                "cell_1_vertex_index": v1,
+                "cell_2_vertex_index": v2
+            } for p, v1, v2 in zip(pair_idx, v1_idx, v2_idx)
+        ]
 
-        # calculate cell to face & face to cell relations
-        cell_to_face = {}
-        face_to_cell = {face_index: [] for face_index in range(len(faces))}
-        cell_to_face_vertices = {}
-        face_to_cell_vertices = {}
-        for cell_vertex_index, cell_vertex in enumerate(tet.field_data["cell_vertices"].reshape(-1, 3)):
-            face_vertex_index = np.where((face_vertices == cell_vertex).all(axis=1))[0]
-            if len(face_vertex_index) == 1:
-                cell_to_face_vertices[cell_vertex_index] = face_vertex_index[0]
-                face_to_cell_vertices[face_vertex_index[0]] = cell_vertex_index
+        surf_to_tet_pt_map = surface_mesh.point_data['vtkOriginalPointIds']
+        tet_to_surf_pt_map = np.full(tet.number_of_points, -1)
+        tet_to_surf_pt_map[surf_to_tet_pt_map] = np.arange(len(surf_to_tet_pt_map))
+        face_nodes_in_tet_ids = surf_to_tet_pt_map[faces] # (Num_Faces, 3)
+        face_to_cell_array = surface_mesh.cell_data['vtkOriginalCellIds'] 
+        
+        from collections import defaultdict
+        cell_to_face = defaultdict(list)
+        face_to_cell = defaultdict(list)
+        
+        orig_cell_ids = surface_mesh.cell_data['vtkOriginalCellIds']
+        for face_idx, tet_cell_idx in enumerate(orig_cell_ids):
+            cell_to_face[tet_cell_idx].append(face_idx)
+            face_to_cell[face_idx].append(tet_cell_idx)
 
-        for cell_index, cell in enumerate(tet.field_data["cells"]):
-            face_vertex_indices = [cell_to_face_vertices[cell_vertex_index] for cell_vertex_index in cell if cell_vertex_index in cell_to_face_vertices]
-            if len(face_vertex_indices) >= 3:
-                extracted = surface_mesh.extract_points(face_vertex_indices, adjacent_cells=False)
-                if extracted.number_of_cells >= 1:
-                    cell_to_face[cell_index] = list(extracted.cell_data['vtkOriginalCellIds'])
-                    for face_index in extracted.cell_data['vtkOriginalCellIds']:
-                        face_to_cell[face_index].append(cell_index)
+        tet.add_field_data(encode_object(dict(cell_to_face)), "cell_to_face")
+        tet.add_field_data(encode_object(dict(face_to_cell)), "face_to_cell")
 
-        tet.add_field_data(encode_object(cell_to_face), "cell_to_face")
-        tet.add_field_data(encode_object(face_to_cell), "face_to_cell")
-
-        # calculate has_face attribute
-        tet.cell_data['has_face'] = np.zeros(tet.number_of_cells)
-        for cell_index, face_indices in cell_to_face.items():
-            tet.cell_data['has_face'][cell_index] = 1
+        # 4. Final attributes
+        tet.cell_data['has_face'] = np.zeros(tet.number_of_cells, dtype=int)
+        tet.cell_data['has_face'][list(cell_to_face.keys())] = 1
 
         tet = update_tet_attributes(tet)
-
-        # calculate bottom cells
+        
         bottom_cells_mask = tet.cell_data['is_bottom']
         bottom_cells = np.where(bottom_cells_mask)[0]
-
         tet.cell_data['overhang_angle'][bottom_cells] = np.nan
+
+        print(f"Tet calc done: {round(time.time()- prev_time, 2)}s")
+        prev_time = time.time()
 
         return tet, bottom_cells_mask, bottom_cells
 
@@ -297,10 +340,7 @@ def s4_slice(model_path):
             if cell_is_overhang and cell_index not in bottom_cells:
                 closest_bottom_cell_indices[cell_index] = paths_to_bottom[cell_index][0]
                 cell_distance_to_bottom[cell_index] = distances_to_bottom[cell_index]
-
-        tet.cell_data["cell_distance_to_bottom"] = cell_distance_to_bottom
-
-        # calculate the gradient of path length to base for each cell
+    
         for cell_index in range(tet.number_of_cells):
             if not np.isnan(cell_distance_to_bottom[cell_index]):
                 local_cells = cell_neighbour_dict["edge"][cell_index]
@@ -374,6 +414,7 @@ def s4_slice(model_path):
         tet.cell_data["path_length_to_base_gradient"] = path_length_to_base_gradient # very sexy
 
         return path_length_to_base_gradient
+
 
     def calculate_initial_rotation_field(tet, MAX_OVERHANG, ROTATION_MULTIPLIER, STEEP_OVERHANG_COMPENSATION, INITIAL_ROTATION_FIELD_SMOOTHING, SET_INITIAL_ROTATION_TO_ZERO, MAX_POS_ROTATION, MAX_NEG_ROTATION):
         '''
@@ -489,7 +530,6 @@ def s4_slice(model_path):
         Optimize the rotation field for each cell in the tetrahedral mesh to make overhangs less
         than MAX_OVERHANG while keeping the rotation field smooth.
         '''
-
         initial_rotation_field = calculate_initial_rotation_field(tet, MAX_OVERHANG, ROTATION_MULTIPLIER, STEEP_OVERHANG_COMPENSATION, INITIAL_ROTATION_FIELD_SMOOTHING, SET_INITIAL_ROTATION_TO_ZERO, MAX_POS_ROTATION, MAX_NEG_ROTATION)
         num_cells_with_initial_rotation = np.sum(~np.isnan(initial_rotation_field))
 
@@ -565,12 +605,38 @@ def s4_slice(model_path):
                         jac=objective_jacobian,
                         max_nfev=ITERATIONS,
                         jac_sparsity=jac_sparsity(),
-                        verbose=0,
+                        verbose=2,
                         method='trf',
                         ftol=1e-6,
                         )
 
+        # render array of numpy images (imgs) into gif
         return result.x
+
+    NEIGHBOUR_LOSS_WEIGHT = 20 # the larger the weight, the more the rotation field will be smoothed
+    MAX_OVERHANG = 30          # the maximum overhang angle in degrees
+    ROTATION_MULTIPLIER = 2   # the larger the multiplier, the more the rotation field will be rotated
+    SET_INITIAL_ROTATION_TO_ZERO = False # reduces influence of initial rotation field on non-overhanging tetrahedrons. good when initial rotation field is noisy
+    INITIAL_ROTATION_FIELD_SMOOTHING = 30
+    MAX_POS_ROTATION = np.deg2rad(3600) # normally set to 360 unless you get collisions
+    MAX_NEG_ROTATION = np.deg2rad(-3600) # normally set to 360 unless you get collisions
+    ITERATIONS = 100
+    SAVE_GIF = True
+    STEEP_OVERHANG_COMPENSATION = True
+
+    rotation_field = optimize_rotations(
+        undeformed_tet,
+        NEIGHBOUR_LOSS_WEIGHT,
+        MAX_OVERHANG,
+        ROTATION_MULTIPLIER,
+        ITERATIONS,
+        SAVE_GIF,
+        STEEP_OVERHANG_COMPENSATION,
+        INITIAL_ROTATION_FIELD_SMOOTHING,
+        SET_INITIAL_ROTATION_TO_ZERO,
+        MAX_POS_ROTATION,
+        MAX_NEG_ROTATION
+    )
 
     NEIGHBOUR_LOSS_WEIGHT = 20 # the larger the weight, the more the rotation field will be smoothed
     MAX_OVERHANG = 30          # the maximum overhang angle in degrees
@@ -596,22 +662,7 @@ def s4_slice(model_path):
         MAX_POS_ROTATION,
         MAX_NEG_ROTATION
     )
-    # rotation_field = calculate_initial_rotation_field(tet, MAX_OVERHANG, ROTATION_MULTIPLIER)
-    # new_tet.extract_cells(np.where(rotation_field != 0)[0]).plot()
 
-    # view the initial rotation field we are trying to optimize towards
-    # tet.extract_cells(tet.cell_data['overhang_angle'] > np.deg2rad(90 + MAX_OVERHANG)).plot(scalars="initial_rotation_field")
-    # tet.cell_data['overhang_angle'] > np.deg2rad(90 + MAX_OVERHANG)
-    # undeformed_tet.plot(scalars="initial_rotation_field")
-    # undeformed_tet.plot(scalars="in_air")
-    # undeformed_tet.plot(scalars="overhang_angle")
-    # undeformed_tet.plot(scalars="path_length_to_base_gradient")
-    # undeformed_tet.plot(scalars=new_tet1.cell_data['rotation_field'])
-
-    # show_path_to_base_gradient_calculation(undeformed_tet, [np.where(tet.cell_data['has_face'].astype(bool) & (tet.cell_data["overhang_angle"] > 3))[0][1]])
-    # show_path_to_base_gradient_calculation(undeformed_tet, np.where(tet.cell_data['has_face'].astype(bool) & (tet.cell_data["overhang_angle"] > np.deg2rad(90 + MAX_OVERHANG)))[0])
-
-    # show_dijkstras(undeformed_tet, np.where(tet.cell_data['has_face'].astype(bool) & (tet.cell_data["overhang_angle"] > 3))[0][1])
     N = np.eye(4) - 1/4 * np.ones((4, 4)) # the N matrix centers the vertices of a tetrahedron around the origin
 
     def calculate_deformation(tet, rotation_field, ITERATIONS, SAVE_GIF):
@@ -622,7 +673,6 @@ def s4_slice(model_path):
         Our parameters are the vertices of the deformed mesh.
         '''
 
-        print("Deforming...")
         new_vertices = tet.points.copy()
 
         params = new_vertices.flatten()
@@ -633,8 +683,6 @@ def s4_slice(model_path):
         old_vertices = tet.field_data["cell_vertices"][tet.field_data["cells"]]
         # Apply the transformation for all cells
         old_vertices_transformed = np.einsum('ijk,ikl->ijl', rotation_matrices, (N @ old_vertices).transpose(0, 2, 1))
-
-            # new_tet = pv.UnstructuredGrid(tet.cells, np.full(tet.number_of_cells, pv.CellType.TETRA), new_vertices)
 
         def objective_function(params):
             start_time = time.time()
@@ -647,6 +695,7 @@ def s4_slice(model_path):
             # Calculate position compatibility loss using vectorized operations
             position_losses = np.linalg.norm(new_vertices_transformed - old_vertices_transformed, axis=(1, 2))**2
 
+            # print(f"Objective function took {time.time() - start_time} seconds")
             return position_losses
 
         def objective_jacobian(params):
@@ -695,7 +744,7 @@ def s4_slice(model_path):
         result = least_squares(objective_function,
                         params,
                         max_nfev=ITERATIONS,
-                        verbose=0,
+                        verbose=2,
                         jac=objective_jacobian,
                         jac_sparsity=jac_sparsity(),
                         method='trf',
@@ -705,6 +754,7 @@ def s4_slice(model_path):
         return result.x[:tet.number_of_points*3].reshape(-1, 3)
 
     ITERATIONS = 1000
+    SAVE_GIF = True
     new_vertices = calculate_deformation(undeformed_tet, rotation_field, ITERATIONS, SAVE_GIF)
     deformed_tet = pv.UnstructuredGrid(undeformed_tet.cells, np.full(undeformed_tet.number_of_cells, pv.CellType.TETRA), new_vertices)
 
@@ -735,10 +785,13 @@ def s4_slice(model_path):
     abs_model= os.path.abspath(f'output_models/deformed/{model_name}_deformed_tet.stl')
     abs_output = os.path.abspath(f'input_gcode/deformed/{model_name}_deformed_tet.gcode')
 
-    command = [cura_path, 'slice', '-v', '-j', abs_printer, '-j', abs_extruder, '-j', abs_custom]
+    command = [cura_path, 'slice', 
+               '-j', abs_printer, 
+               '-j', abs_extruder, 
+               '-j', abs_custom]
     command = get_slicer_settings(command)
     command.extend(['-l', abs_model, '-o', abs_output])
-    subprocess.run(command)
+    subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     deformed_tet = pickle.load(open(f'pickle_files/deformed_{model_name}.pkl', 'rb'))
 
@@ -749,49 +802,6 @@ def s4_slice(model_path):
 
         mat = np.vstack([p2 - p1, p3 - p1, p4 - p1])
         return np.abs(np.linalg.det(mat)) / 6
-
-    def vectorized_tetrahedron_volumes(p1, p2, p3 ,p4):
-        a = p2 - p1
-        b = p3 - p1
-        c = p4 - p1
-
-        # unrolled
-        det = (a[:, 0] * (b[:, 1] * c[:, 2] - b[:, 2] * c[:, 1]) -
-            a[:, 1] * (b[:, 0] * c[:, 2] - b[:, 2] * c[:, 0]) +
-            a[:, 2] * (b[:, 0] * c[:, 1] - b[:, 1] * c[:, 0]))
-            
-        return np.abs(det) / 6.0
-
-    def vectorized_barycentric_coordinates(tet_verts, points):
-        p1, p2, p3, p4 = tet_verts[:, 0], tet_verts[:, :1], tet_verts[:, 2], tet_verts[:, 3]
-        total_vol = vectorized_tetrahedron_volumes(p1, p2, p3, p4)
-        
-        vol_a = vectorized_tetrahedron_volumes(points, p2, p3, p4)
-        vol_b = vectorized_tetrahedron_volumes(p1, points, p3, p4)
-        vol_c = vectorized_tetrahedron_volumes(p1, p2, points, p4)
-        vol_d = vectorized_tetrahedron_volumes(p1, p2, p3, points)
-
-        with np.errstate(divid='ignore', invalid='ignore'):
-            bary = np.stack([vol_a, vol_b, vol_c, vol_d], axis = 1) / total_vol[:, np.newaxis]
-
-        return bary
-
-    def vectorized_barycentric_interpolate(points, 
-                                           cell_indices, 
-                                           deformed_tet, 
-                                           vertex_transformations, 
-                                           vertex_rotations):
-        v_idx = deformed_tet.field_data['cells'][cell_indices]
-        cell_verts = deformed_tet.field_data['cell_vertices'][v_idx]
-        bary = vectorized_barycentric_coordinates(cell_verts, points)
-        trans_at_points = np.sum(vertex_transformations[v_idx] * bary[..., np.newaxis], axis=0)
-        rot_at_points = np.sum(vertex_rotations[v_idx] * bary, axis=0)
-        return points - trans_at_points, rot_at_points
-    
-    def project_vec(pts, x_axis, y_axis):
-        px = np.einsum('nij,nj->ni', pts, x_axis)
-        py = pts[:, :, 2]
-        return np.stack([px, py], axis=-1)
 
     def calc_barycentric_coordinates(tet_a, tet_b, tet_c, tet_d, point):
         '''
@@ -825,13 +835,12 @@ def s4_slice(model_path):
 
         return np.array([projected_x, projected_y]).T
     deformed_tet, _, _ = calculate_tet_attributes(deformed_tet)
-
     from pygcode import Line
 
     SEG_SIZE = 0.6 # mm
     MAX_ROTATION = 30 # degrees
     MIN_ROTATION = -130 # degrees
-    NOZZLE_OFFSET = 41.5 # mm actuallt 41.5
+    NOZZLE_OFFSET = 42 # mm actuallt 41.5
 
     # find how each vertex in tet has been transformed
     vertex_transformations = deformed_tet.points - input_tet.points
@@ -1000,6 +1009,7 @@ def s4_slice(model_path):
 
     # transform gcode points to original mesh's shape
     print("Reforming...")
+    prev_time = time.time()
     new_gcode_points = []
     prev_new_position = None
     travelling_over_air = False
@@ -1123,6 +1133,8 @@ def s4_slice(model_path):
 
 
     print(f"Lost {len(lost_vertices)} vertices")
+    print(f"Reforming done: {round(time.time()- prev_time, 2)}s")
+    prev_time = time.time()
 
     prev_r = 0
     prev_theta = 0
